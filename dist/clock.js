@@ -1,282 +1,478 @@
-const m = /* @__PURE__ */ new Map(), S = (s) => String(s ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#39;"), A = (s) => {
-  const t = m.get(s);
-  if (t)
-    return t;
-  const e = s.replace(/\bthis\b/g, "__item"), i = new Function("scope", `with (scope) { return (${e}); }`);
-  return m.set(s, i), i;
-}, u = (s, t) => {
+var _a;
+const expressionCache = /* @__PURE__ */ new Map();
+const escapeHtml = (value) => String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#39;");
+const compileExpression = (expression) => {
+  const cached = expressionCache.get(expression);
+  if (cached) {
+    return cached;
+  }
+  const transformed = expression.replace(/\bthis\b/g, "__item");
+  const fn = new Function("scope", `with (scope) { return (${transformed}); }`);
+  expressionCache.set(expression, fn);
+  return fn;
+};
+const evaluate = (expression, scope) => {
   try {
-    return A(s)(t);
+    return compileExpression(expression)(scope);
   } catch {
     return "";
   }
-}, f = (s, t = 0, e) => {
-  const i = [];
-  let n = t;
-  for (; n < s.length; ) {
-    const o = s.indexOf("{{", n);
-    if (o === -1)
-      return i.push({ type: "text", value: s.slice(n) }), { nodes: i, index: s.length };
-    o > n && i.push({ type: "text", value: s.slice(n, o) });
-    const a = s.indexOf("}}", o + 2);
-    if (a === -1)
-      return i.push({ type: "text", value: s.slice(o) }), { nodes: i, index: s.length };
-    const c = s.slice(o + 2, a).trim();
-    if (n = a + 2, c === "/if" || c === "/each") {
-      if (e === c)
-        return { nodes: i, index: n };
-      i.push({ type: "text", value: `{{${c}}}` });
-      continue;
-    }
-    if (c.startsWith("#if ")) {
-      const l = f(s, n, "/if");
-      i.push({
-        type: "if",
-        condition: c.slice(4).trim(),
-        children: l.nodes
-      }), n = l.index;
-      continue;
-    }
-    if (c.startsWith("#each ")) {
-      const l = f(s, n, "/each");
-      i.push({
-        type: "each",
-        source: c.slice(6).trim(),
-        children: l.nodes
-      }), n = l.index;
-      continue;
-    }
-    i.push({ type: "expr", value: c });
-  }
-  return { nodes: i, index: n };
-}, h = (s, t) => {
-  let e = "";
-  for (const i of s) {
-    if (i.type === "text") {
-      e += i.value;
-      continue;
-    }
-    if (i.type === "expr") {
-      e += S(u(i.value, t));
-      continue;
-    }
-    if (i.type === "if") {
-      u(i.condition, t) && (e += h(i.children, t));
-      continue;
-    }
-    const n = u(i.source, t);
-    if (Array.isArray(n))
-      for (const o of n) {
-        const a = Object.create(t);
-        a.__item = o, e += h(i.children, a);
-      }
-  }
-  return e;
-}, T = (s) => {
-  const t = f(s).nodes;
-  return (e) => h(t, e);
 };
-function w(s, t = "asset") {
-  return window.__TAURI_INTERNALS__.convertFileSrc(s, t);
+const parseNodes = (template2, from = 0, stopAt) => {
+  const nodes = [];
+  let index = from;
+  while (index < template2.length) {
+    const start = template2.indexOf("{{", index);
+    if (start === -1) {
+      nodes.push({ type: "text", value: template2.slice(index) });
+      return { nodes, index: template2.length };
+    }
+    if (start > index) {
+      nodes.push({ type: "text", value: template2.slice(index, start) });
+    }
+    const close = template2.indexOf("}}", start + 2);
+    if (close === -1) {
+      nodes.push({ type: "text", value: template2.slice(start) });
+      return { nodes, index: template2.length };
+    }
+    const token = template2.slice(start + 2, close).trim();
+    index = close + 2;
+    if (token === "/if" || token === "/each") {
+      if (stopAt === token) {
+        return { nodes, index };
+      }
+      nodes.push({ type: "text", value: `{{${token}}}` });
+      continue;
+    }
+    if (token.startsWith("#if ")) {
+      const child = parseNodes(template2, index, "/if");
+      nodes.push({
+        type: "if",
+        condition: token.slice(4).trim(),
+        children: child.nodes
+      });
+      index = child.index;
+      continue;
+    }
+    if (token.startsWith("#each ")) {
+      const child = parseNodes(template2, index, "/each");
+      nodes.push({
+        type: "each",
+        source: token.slice(6).trim(),
+        children: child.nodes
+      });
+      index = child.index;
+      continue;
+    }
+    nodes.push({ type: "expr", value: token });
+  }
+  return { nodes, index };
+};
+const renderNodes = (nodes, scope) => {
+  let output = "";
+  for (const node of nodes) {
+    if (node.type === "text") {
+      output += node.value;
+      continue;
+    }
+    if (node.type === "expr") {
+      output += escapeHtml(evaluate(node.value, scope));
+      continue;
+    }
+    if (node.type === "if") {
+      if (Boolean(evaluate(node.condition, scope))) {
+        output += renderNodes(node.children, scope);
+      }
+      continue;
+    }
+    const items = evaluate(node.source, scope);
+    if (!Array.isArray(items)) {
+      continue;
+    }
+    for (const item of items) {
+      const childScope = Object.create(scope);
+      childScope.__item = item;
+      output += renderNodes(node.children, childScope);
+    }
+  }
+  return output;
+};
+const createTemplateRenderer = (template2) => {
+  const parsed = parseNodes(template2).nodes;
+  return (scope) => renderNodes(parsed, scope);
+};
+typeof SuppressedError === "function" ? SuppressedError : function(error, suppressed, message) {
+  var e = new Error(message);
+  return e.name = "SuppressedError", e.error = error, e.suppressed = suppressed, e;
+};
+function convertFileSrc(filePath, protocol = "asset") {
+  return window.__TAURI_INTERNALS__.convertFileSrc(filePath, protocol);
 }
-var v;
-(function(s) {
-  s.WINDOW_RESIZED = "tauri://resize", s.WINDOW_MOVED = "tauri://move", s.WINDOW_CLOSE_REQUESTED = "tauri://close-requested", s.WINDOW_DESTROYED = "tauri://destroyed", s.WINDOW_FOCUS = "tauri://focus", s.WINDOW_BLUR = "tauri://blur", s.WINDOW_SCALE_FACTOR_CHANGED = "tauri://scale-change", s.WINDOW_THEME_CHANGED = "tauri://theme-changed", s.WINDOW_CREATED = "tauri://window-created", s.WEBVIEW_CREATED = "tauri://webview-created", s.DRAG_ENTER = "tauri://drag-enter", s.DRAG_OVER = "tauri://drag-over", s.DRAG_DROP = "tauri://drag-drop", s.DRAG_LEAVE = "tauri://drag-leave";
-})(v || (v = {}));
-const E = (s) => {
-  if (typeof s != "function")
-    return !1;
-  const t = s;
-  return t._isSignal === !0 && typeof t.set == "function" && typeof t.subscribe == "function";
-}, R = (s, t) => {
-  const e = [];
-  for (const i of Object.keys(s)) {
-    const n = s[i];
-    E(n) && e.push(n.subscribe(() => t()));
+var TauriEvent;
+(function(TauriEvent2) {
+  TauriEvent2["WINDOW_RESIZED"] = "tauri://resize";
+  TauriEvent2["WINDOW_MOVED"] = "tauri://move";
+  TauriEvent2["WINDOW_CLOSE_REQUESTED"] = "tauri://close-requested";
+  TauriEvent2["WINDOW_DESTROYED"] = "tauri://destroyed";
+  TauriEvent2["WINDOW_FOCUS"] = "tauri://focus";
+  TauriEvent2["WINDOW_BLUR"] = "tauri://blur";
+  TauriEvent2["WINDOW_SCALE_FACTOR_CHANGED"] = "tauri://scale-change";
+  TauriEvent2["WINDOW_THEME_CHANGED"] = "tauri://theme-changed";
+  TauriEvent2["WINDOW_CREATED"] = "tauri://window-created";
+  TauriEvent2["WEBVIEW_CREATED"] = "tauri://webview-created";
+  TauriEvent2["DRAG_ENTER"] = "tauri://drag-enter";
+  TauriEvent2["DRAG_OVER"] = "tauri://drag-over";
+  TauriEvent2["DRAG_DROP"] = "tauri://drag-drop";
+  TauriEvent2["DRAG_LEAVE"] = "tauri://drag-leave";
+})(TauriEvent || (TauriEvent = {}));
+const isSignal = (value) => {
+  if (typeof value !== "function") {
+    return false;
+  }
+  const candidate = value;
+  return candidate._isSignal === true && typeof candidate.set === "function" && typeof candidate.subscribe === "function";
+};
+const signal = (initialValue) => {
+  let current = initialValue;
+  const subscribers = /* @__PURE__ */ new Set();
+  const read = (() => current);
+  read._isSignal = true;
+  read.set = (value) => {
+    current = value;
+    for (const subscriber of subscribers) {
+      subscriber(current);
+    }
+  };
+  read.update = (updater) => {
+    read.set(updater(current));
+  };
+  read.subscribe = (subscriber) => {
+    subscribers.add(subscriber);
+    return () => subscribers.delete(subscriber);
+  };
+  return read;
+};
+const bindSignals = (source, onChange) => {
+  const unsubscribers = [];
+  for (const key of Object.keys(source)) {
+    const value = source[key];
+    if (isSignal(value)) {
+      unsubscribers.push(value.subscribe(() => onChange()));
+    }
   }
   return () => {
-    for (const i of e)
-      i();
-  };
-}, W = (s, t) => new Proxy(
-  { payload: t },
-  {
-    get(e, i) {
-      if (typeof i != "string")
-        return;
-      if (i in e)
-        return e[i];
-      const n = s[i];
-      return typeof n == "function" ? n.bind(s) : n;
-    },
-    has(e, i) {
-      return typeof i != "string" ? !1 : i in e || i in s;
+    for (const unsubscribe of unsubscribers) {
+      unsubscribe();
     }
-  }
-), F = ["src", "href", "poster"], z = "{{pack-install-path}}/", y = "{{ASSETS}}", _ = (s) => {
-  const t = s.trim();
-  return t.length === 0 || t.startsWith("data:") || t.startsWith("blob:") || t.startsWith("http://") || t.startsWith("https://") || t.startsWith("file:") || t.startsWith("asset:") || t.startsWith("mailto:") || t.startsWith("tel:") || t.startsWith("javascript:") || t.startsWith("//") || t.startsWith("/") || t.startsWith("#");
-}, N = (s) => {
-  const t = s.trim();
-  if (!t)
+  };
+};
+const createScope = (instance, payload) => {
+  return new Proxy(
+    { payload },
+    {
+      get(target, property) {
+        if (typeof property !== "string") {
+          return void 0;
+        }
+        if (property in target) {
+          return target[property];
+        }
+        const value = instance[property];
+        if (typeof value === "function") {
+          return value.bind(instance);
+        }
+        return value;
+      },
+      has(target, property) {
+        if (typeof property !== "string") {
+          return false;
+        }
+        return property in target || property in instance;
+      }
+    }
+  );
+};
+const RELATIVE_URL_ATTRIBUTES = ["src", "href", "poster"];
+const PACK_INSTALL_PATH_PLACEHOLDER = "{{pack-install-path}}/";
+const ASSETS_PLACEHOLDER = "{{ASSETS}}";
+const isExternalAssetUrl = (value) => {
+  const trimmed = value.trim();
+  return trimmed.length === 0 || trimmed.startsWith("data:") || trimmed.startsWith("blob:") || trimmed.startsWith("http://") || trimmed.startsWith("https://") || trimmed.startsWith("file:") || trimmed.startsWith("asset:") || trimmed.startsWith("mailto:") || trimmed.startsWith("tel:") || trimmed.startsWith("javascript:") || trimmed.startsWith("//") || trimmed.startsWith("/") || trimmed.startsWith("#");
+};
+const extractWidgetRelativePath = (value) => {
+  const trimmed = value.trim();
+  if (!trimmed) {
     return null;
-  if (!_(t))
-    return t.replace(/^\.\/+/, "").replace(/^\/+/, "");
-  if (t.startsWith("http://") || t.startsWith("https://"))
+  }
+  if (!isExternalAssetUrl(trimmed)) {
+    return trimmed.replace(/^\.\/+/, "").replace(/^\/+/, "");
+  }
+  if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
     try {
-      const e = new URL(t);
-      if (e.origin === window.location.origin)
-        return `${e.pathname}${e.search}${e.hash}`.replace(/^\/+/, "");
+      const url = new URL(trimmed);
+      if (url.origin === window.location.origin) {
+        return `${url.pathname}${url.search}${url.hash}`.replace(/^\/+/, "");
+      }
     } catch {
       return null;
     }
+  }
   return null;
-}, C = (s, t) => {
-  const e = s.replaceAll("\\", "/").replace(/\/+$/, ""), i = `${e}/${t.trim()}`, n = i.split("/"), o = [];
-  for (const a of n) {
-    if (!a || a === ".") {
-      o.length === 0 && i.startsWith("/") && o.push("");
+};
+const normalizeJoinedAssetPath = (widgetDirectory, relativePath) => {
+  const normalizedBase = widgetDirectory.replaceAll("\\", "/").replace(/\/+$/, "");
+  const combined = `${normalizedBase}/${relativePath.trim()}`;
+  const segments = combined.split("/");
+  const resolved = [];
+  for (const segment of segments) {
+    if (!segment || segment === ".") {
+      if (resolved.length === 0 && combined.startsWith("/")) {
+        resolved.push("");
+      }
       continue;
     }
-    if (a === "..") {
-      (o.length > 1 || o.length === 1 && o[0] !== "") && o.pop();
+    if (segment === "..") {
+      if (resolved.length > 1 || resolved.length === 1 && resolved[0] !== "") {
+        resolved.pop();
+      }
       continue;
     }
-    o.push(a);
+    resolved.push(segment);
   }
-  return o.join("/") || e;
-}, p = (s, t) => {
-  const e = N(t);
-  if (!s || !e)
-    return t;
+  return resolved.join("/") || normalizedBase;
+};
+const resolveAssetUrl = (widgetDirectory, value) => {
+  const relativePath = extractWidgetRelativePath(value);
+  if (!widgetDirectory || !relativePath) {
+    return value;
+  }
   try {
-    return w(C(s, e));
+    return convertFileSrc(normalizeJoinedAssetPath(widgetDirectory, relativePath));
   } catch {
-    return t;
-  }
-}, M = (s) => {
-  const t = s.trim().replaceAll("\\", "/").replace(/\/+$/, "");
-  if (!t)
-    return "";
-  try {
-    return w(t);
-  } catch {
-    return t;
-  }
-}, I = (s, t) => s.split(",").map((e) => {
-  const i = e.trim();
-  if (!i)
-    return i;
-  const [n, o] = i.split(/\s+/, 2), a = p(t, n);
-  return o ? `${a} ${o}` : a;
-}).join(", "), L = (s, t) => s.replace(/url\(\s*(['"]?)([^'")]+)\1\s*\)/gi, (e, i, n) => {
-  const o = p(t, n);
-  return o === n ? e : `url("${o}")`;
-}), g = (s, t) => {
-  for (const n of F) {
-    const o = s.getAttribute(n);
-    if (!o)
-      continue;
-    const a = p(t, o);
-    a !== o && s.setAttribute(n, a);
-  }
-  const e = s.getAttribute("srcset");
-  if (e) {
-    const n = I(e, t);
-    n !== e && s.setAttribute("srcset", n);
-  }
-  const i = s.getAttribute("style");
-  if (i) {
-    const n = L(i, t);
-    n !== i && s.setAttribute("style", n);
-  }
-}, x = (s, t) => {
-  if (t) {
-    s instanceof Element && g(s, t);
-    for (const e of Array.from(s.querySelectorAll("*")))
-      g(e, t);
-  }
-}, b = (s, t) => {
-  if (!t)
-    return s;
-  let e = s;
-  const i = M(t);
-  return i && e.includes(y) && (e = e.replaceAll(y, i)), e.includes(z) ? e.replace(/\{\{pack-install-path\}\}\/([^"')\s]+)/g, (n, o) => p(t, o)) : e;
-}, O = (s, t) => class {
-  constructor({
-    mount: i,
-    payload: n,
-    setLoading: o
-  }) {
-    this.cleanups = [], this.widgetDirectory = "", this.mount = i, this.payload = n ?? {}, this.setLoading = typeof o == "function" ? o : (() => {
-    }), this.assetObserver = new MutationObserver((a) => {
-      if (this.widgetDirectory)
-        for (const c of a) {
-          if (c.type === "attributes" && c.target instanceof Element) {
-            g(c.target, this.widgetDirectory);
-            continue;
-          }
-          for (const l of Array.from(c.addedNodes))
-            l instanceof Element && x(l, this.widgetDirectory);
-        }
-    }), this.logic = new s({
-      mount: i,
-      payload: this.payload,
-      setLoading: (a) => this.setLoading(!!a),
-      on: (a, c, l) => this.on(a, c, l)
-    }), this.cleanupSignalSubscriptions = R(this.logic, () => this.render()), this.assetObserver.observe(this.mount, {
-      subtree: !0,
-      childList: !0,
-      attributes: !0,
-      attributeFilter: ["src", "href", "poster", "srcset", "style"]
-    });
-  }
-  onInit() {
-    this.render(), this.logic.onInit?.();
-  }
-  onUpdate(i) {
-    this.payload = i ?? {}, this.logic.onUpdate?.(this.payload), this.render();
-  }
-  onDestroy() {
-    for (this.cleanupSignalSubscriptions(); this.cleanups.length > 0; )
-      this.cleanups.pop()?.();
-    this.assetObserver.disconnect(), this.logic.onDestroy?.(), this.mount.innerHTML = "";
-  }
-  render() {
-    const i = W(this.logic, this.payload);
-    this.widgetDirectory = String(
-      this.payload?.widgetDirectory ?? this.payload?.directory ?? ""
-    ).trim();
-    const n = b(t.template, this.widgetDirectory), o = b(t.styles, this.widgetDirectory), c = T(n)(i);
-    this.mount.innerHTML = `<style>${o}</style>${c}`, this.mount.setAttribute("data-displayduck-render-empty", c.trim().length === 0 ? "true" : "false"), x(this.mount, this.widgetDirectory), this.logic.afterRender?.();
-  }
-  on(i, n, o) {
-    const a = (l) => {
-      const d = l.target?.closest(n);
-      !d || !this.mount.contains(d) || o(l, d);
-    };
-    this.mount.addEventListener(i, a);
-    const c = () => this.mount.removeEventListener(i, a);
-    return this.cleanups.push(c), c;
+    return value;
   }
 };
-var r;
-let $ = (r = class {
-  constructor(t) {
-    this.ctx = t, this.clockTimerId = null, this.flipTimeouts = /* @__PURE__ */ new Map(), this.widgetName = "", this.analogMarkerRotation = 0, this.flipDigits = [], this.digitalHourEl = null, this.digitalMinuteEl = null, this.digitalSecondEl = null, this.analogHourEl = null, this.analogMinuteEl = null, this.analogMarkerEl = null, this.analogTickEls = [], this.flipDigitEls = [], this.analogDigits = [3, 6, 9, 12], this.analogTicks = Array.from({ length: 60 }, (i, n) => n), this.config = this.extractConfig(t.payload), this.widgetName = this.extractWidgetName(t.payload);
-    const e = this.getCurrentTime();
-    this.flipDigits = this.createFlipDigits(e);
+const resolveAssetsBaseUrl = (widgetDirectory) => {
+  const normalizedDirectory = widgetDirectory.trim().replaceAll("\\", "/").replace(/\/+$/, "");
+  if (!normalizedDirectory) {
+    return "";
+  }
+  try {
+    return convertFileSrc(normalizedDirectory);
+  } catch {
+    return normalizedDirectory;
+  }
+};
+const rewriteSrcset = (value, widgetDirectory) => {
+  return value.split(",").map((entry) => {
+    const trimmed = entry.trim();
+    if (!trimmed) {
+      return trimmed;
+    }
+    const [url, descriptor] = trimmed.split(/\s+/, 2);
+    const nextUrl = resolveAssetUrl(widgetDirectory, url);
+    return descriptor ? `${nextUrl} ${descriptor}` : nextUrl;
+  }).join(", ");
+};
+const rewriteInlineStyleUrls = (value, widgetDirectory) => {
+  return value.replace(/url\(\s*(['"]?)([^'")]+)\1\s*\)/gi, (full, quote, urlValue) => {
+    const nextUrl = resolveAssetUrl(widgetDirectory, urlValue);
+    if (nextUrl === urlValue) {
+      return full;
+    }
+    return `url("${nextUrl}")`;
+  });
+};
+const rewriteElementAssetUrls = (element, widgetDirectory) => {
+  for (const attribute of RELATIVE_URL_ATTRIBUTES) {
+    const currentValue = element.getAttribute(attribute);
+    if (!currentValue) {
+      continue;
+    }
+    const nextValue = resolveAssetUrl(widgetDirectory, currentValue);
+    if (nextValue !== currentValue) {
+      element.setAttribute(attribute, nextValue);
+    }
+  }
+  const currentSrcset = element.getAttribute("srcset");
+  if (currentSrcset) {
+    const nextSrcset = rewriteSrcset(currentSrcset, widgetDirectory);
+    if (nextSrcset !== currentSrcset) {
+      element.setAttribute("srcset", nextSrcset);
+    }
+  }
+  const currentStyle = element.getAttribute("style");
+  if (currentStyle) {
+    const nextStyle = rewriteInlineStyleUrls(currentStyle, widgetDirectory);
+    if (nextStyle !== currentStyle) {
+      element.setAttribute("style", nextStyle);
+    }
+  }
+};
+const rewriteTreeAssetUrls = (root, widgetDirectory) => {
+  if (!widgetDirectory) {
+    return;
+  }
+  if (root instanceof Element) {
+    rewriteElementAssetUrls(root, widgetDirectory);
+  }
+  for (const element of Array.from(root.querySelectorAll("*"))) {
+    rewriteElementAssetUrls(element, widgetDirectory);
+  }
+};
+const rewriteInstallPathPlaceholders = (input, widgetDirectory) => {
+  if (!widgetDirectory) {
+    return input;
+  }
+  let output = input;
+  const assetsBaseUrl = resolveAssetsBaseUrl(widgetDirectory);
+  if (assetsBaseUrl && output.includes(ASSETS_PLACEHOLDER)) {
+    output = output.replaceAll(ASSETS_PLACEHOLDER, assetsBaseUrl);
+  }
+  if (!output.includes(PACK_INSTALL_PATH_PLACEHOLDER)) {
+    return output;
+  }
+  return output.replace(/\{\{pack-install-path\}\}\/([^"')\s]+)/g, (full, relativePath) => {
+    return resolveAssetUrl(widgetDirectory, relativePath);
+  });
+};
+const createWidgetClass = (WidgetImpl, options) => {
+  return class RuntimeWidget {
+    constructor({
+      mount,
+      payload,
+      setLoading
+    }) {
+      this.cleanups = [];
+      this.widgetDirectory = "";
+      this.mount = mount;
+      this.payload = payload ?? {};
+      this.setLoading = typeof setLoading === "function" ? setLoading : (() => {
+      });
+      this.assetObserver = new MutationObserver((mutations) => {
+        if (!this.widgetDirectory) {
+          return;
+        }
+        for (const mutation of mutations) {
+          if (mutation.type === "attributes" && mutation.target instanceof Element) {
+            rewriteElementAssetUrls(mutation.target, this.widgetDirectory);
+            continue;
+          }
+          for (const node of Array.from(mutation.addedNodes)) {
+            if (node instanceof Element) {
+              rewriteTreeAssetUrls(node, this.widgetDirectory);
+            }
+          }
+        }
+      });
+      this.logic = new WidgetImpl({
+        mount,
+        payload: this.payload,
+        setLoading: (loading) => this.setLoading(Boolean(loading)),
+        on: (eventName, selector, handler) => this.on(eventName, selector, handler)
+      });
+      this.cleanupSignalSubscriptions = bindSignals(this.logic, () => this.render());
+      this.assetObserver.observe(this.mount, {
+        subtree: true,
+        childList: true,
+        attributes: true,
+        attributeFilter: ["src", "href", "poster", "srcset", "style"]
+      });
+    }
+    onInit() {
+      this.render();
+      this.logic.onInit?.();
+    }
+    onUpdate(payload) {
+      this.payload = payload ?? {};
+      this.logic.onUpdate?.(this.payload);
+      this.render();
+    }
+    onDestroy() {
+      this.cleanupSignalSubscriptions();
+      while (this.cleanups.length > 0) {
+        const cleanup = this.cleanups.pop();
+        cleanup?.();
+      }
+      this.assetObserver.disconnect();
+      this.logic.onDestroy?.();
+      this.mount.innerHTML = "";
+    }
+    render() {
+      const scope = createScope(this.logic, this.payload);
+      this.widgetDirectory = String(
+        this.payload?.widgetDirectory ?? this.payload?.directory ?? ""
+      ).trim();
+      const finalTemplate = rewriteInstallPathPlaceholders(options.template, this.widgetDirectory);
+      const finalStyles = rewriteInstallPathPlaceholders(options.styles, this.widgetDirectory);
+      const renderTemplate = createTemplateRenderer(finalTemplate);
+      const html = renderTemplate(scope);
+      this.mount.innerHTML = `<style>${finalStyles}</style>${html}`;
+      this.mount.setAttribute("data-displayduck-render-empty", html.trim().length === 0 ? "true" : "false");
+      rewriteTreeAssetUrls(this.mount, this.widgetDirectory);
+      this.logic.afterRender?.();
+    }
+    on(eventName, selector, handler) {
+      const listener = (event) => {
+        const target = event.target;
+        const matched = target?.closest(selector);
+        if (!matched || !this.mount.contains(matched)) {
+          return;
+        }
+        handler(event, matched);
+      };
+      this.mount.addEventListener(eventName, listener);
+      const cleanup = () => this.mount.removeEventListener(eventName, listener);
+      this.cleanups.push(cleanup);
+      return cleanup;
+    }
+  };
+};
+let DisplayDuckWidget$1 = (_a = class {
+  constructor(ctx) {
+    this.ctx = ctx;
+    this.clockTimerId = null;
+    this.flipTimeouts = /* @__PURE__ */ new Map();
+    this.widgetName = "";
+    this.analogMarkerRotation = 0;
+    this.flipDigits = [];
+    this.digitalHourEl = null;
+    this.digitalMinuteEl = null;
+    this.digitalSecondEl = null;
+    this.analogHourEl = null;
+    this.analogMinuteEl = null;
+    this.analogMarkerEl = null;
+    this.analogTickEls = [];
+    this.flipDigitEls = [];
+    this.analogQuarterDigits = [3, 6, 9, 12];
+    this.analogAllDigits = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+    this.analogTicks = Array.from({ length: 60 }, (_, index) => index);
+    this.shadows = signal(false);
+    this.config = this.extractConfig(ctx.payload);
+    this.widgetName = this.extractWidgetName(ctx.payload);
+    const now = this.getCurrentTime();
+    this.flipDigits = this.createFlipDigits(now);
   }
   onInit() {
-    this.cacheDomRefs(), this.applyTimeToDom(this.getCurrentTime(), !0), this.scheduleNextTick();
+    this.cacheDomRefs();
+    this.applyTimeToDom(this.getCurrentTime(), true);
+    this.scheduleNextTick();
   }
-  onUpdate(t) {
-    this.config = this.extractConfig(t), this.widgetName = this.extractWidgetName(t), setTimeout(() => {
-      this.cacheDomRefs(), this.flipDigits = this.createFlipDigits(this.getCurrentTime()), this.applyTimeToDom(this.getCurrentTime(), !0), this.scheduleNextTick();
+  onUpdate(payload) {
+    this.config = this.extractConfig(payload);
+    this.widgetName = this.extractWidgetName(payload);
+    setTimeout(() => {
+      this.cacheDomRefs();
+      this.flipDigits = this.createFlipDigits(this.getCurrentTime());
+      this.applyTimeToDom(this.getCurrentTime(), true);
+      this.scheduleNextTick();
     }, 0);
   }
   onDestroy() {
     this.stopClock();
+  }
+  shadowsEnabled() {
+    return this.shadows();
   }
   isAnalog() {
     return this.styles() === "analog";
@@ -288,26 +484,36 @@ let $ = (r = class {
     return this.styles() === "flip";
   }
   styles() {
-    const t = String(this.config.styles ?? "").toLowerCase();
-    if (t === "flip" || t === "digital" || t === "analog")
-      return t;
-    const e = this.widgetName.toLowerCase();
-    return e.includes("flip") ? "flip" : e.includes("analog") ? "analog" : (e.includes("digital"), "digital");
+    const raw = String(this.config.styles ?? "").toLowerCase();
+    if (raw === "flip" || raw === "digital" || raw === "analog") {
+      return raw;
+    }
+    const name = this.widgetName.toLowerCase();
+    if (name.includes("flip")) return "flip";
+    if (name.includes("analog")) return "analog";
+    if (name.includes("digital")) return "digital";
+    return "digital";
   }
   showSeconds() {
-    return !!this.config.showSeconds;
+    return Boolean(this.config.showSeconds);
   }
   ledFont() {
-    return !!this.config.ledFont;
+    return Boolean(this.config.ledFont);
   }
   blinkSeparator() {
-    return !!this.config.blinkSeparator;
+    return Boolean(this.config.blinkSeparator);
   }
-  getTickRotation(t) {
-    return `rotate(${t * 6})`;
+  showAllNumbers() {
+    return Boolean(this.config.showAllNumbers);
   }
-  getDigitTransform(t) {
-    return `rotate(${t * 30}) translate(0 -55) rotate(${-t * 30})`;
+  analogDigits() {
+    return this.showAllNumbers() ? this.analogAllDigits : this.analogQuarterDigits;
+  }
+  getTickRotation(tick) {
+    return `rotate(${tick * 6})`;
+  }
+  getDigitTransform(digit) {
+    return `rotate(${digit * 30}) translate(0 -55) rotate(${-digit * 30})`;
   }
   firstFlipPair() {
     return [0, 1];
@@ -319,118 +525,186 @@ let $ = (r = class {
     return [4, 5];
   }
   cacheDomRefs() {
-    this.digitalHourEl = this.ctx.mount.querySelector("[data-clock-hour]"), this.digitalMinuteEl = this.ctx.mount.querySelector("[data-clock-minute]"), this.digitalSecondEl = this.ctx.mount.querySelector("[data-clock-second]"), this.analogHourEl = this.ctx.mount.querySelector("[data-analog-hour]"), this.analogMinuteEl = this.ctx.mount.querySelector("[data-analog-minute]"), this.analogMarkerEl = this.ctx.mount.querySelector("[data-analog-marker]"), this.analogTickEls = Array.from(this.ctx.mount.querySelectorAll("[data-analog-tick]")), this.flipDigitEls = Array.from(this.ctx.mount.querySelectorAll("[data-flip-index]"));
+    this.digitalHourEl = this.ctx.mount.querySelector("[data-clock-hour]");
+    this.digitalMinuteEl = this.ctx.mount.querySelector("[data-clock-minute]");
+    this.digitalSecondEl = this.ctx.mount.querySelector("[data-clock-second]");
+    this.analogHourEl = this.ctx.mount.querySelector("[data-analog-hour]");
+    this.analogMinuteEl = this.ctx.mount.querySelector("[data-analog-minute]");
+    this.analogMarkerEl = this.ctx.mount.querySelector("[data-analog-marker]");
+    this.analogTickEls = Array.from(this.ctx.mount.querySelectorAll("[data-analog-tick]"));
+    this.flipDigitEls = Array.from(this.ctx.mount.querySelectorAll("[data-flip-index]"));
   }
   scheduleNextTick() {
-    if (this.stopClock(), this.isAnalog()) {
-      const e = () => {
-        const i = /* @__PURE__ */ new Date();
-        this.analogMarkerRotation = (i.getSeconds() + i.getMilliseconds() / 1e3) * 6, this.applyTimeToDom(this.getTimeForDate(i), !1), this.clockTimerId = setTimeout(e, r.ANALOG_REFRESH_MS);
+    this.stopClock();
+    if (this.isAnalog()) {
+      const tickAnalog = () => {
+        const nowDate = /* @__PURE__ */ new Date();
+        this.analogMarkerRotation = (nowDate.getSeconds() + nowDate.getMilliseconds() / 1e3) * 6;
+        this.applyTimeToDom(this.getTimeForDate(nowDate), false);
+        this.clockTimerId = setTimeout(tickAnalog, _a.ANALOG_REFRESH_MS);
       };
-      e();
+      tickAnalog();
       return;
     }
-    const t = () => {
-      const e = Date.now(), i = this.isFlip() ? r.FLIP_DURATION_MS : 0;
-      let n = 1e3 - e % 1e3 - i;
-      n <= 0 && (n += 1e3), this.clockTimerId = setTimeout(() => {
-        const o = Date.now(), a = this.isFlip() ? o + r.FLIP_DURATION_MS : o;
-        this.applyTimeToDom(this.getTimeForDate(new Date(a)), !1), t();
-      }, n);
+    const tick = () => {
+      const now = Date.now();
+      const leadMs = this.isFlip() ? _a.FLIP_DURATION_MS : 0;
+      let delay = 1e3 - now % 1e3 - leadMs;
+      if (delay <= 0) delay += 1e3;
+      this.clockTimerId = setTimeout(() => {
+        const baseNow = Date.now();
+        const effectiveNow = this.isFlip() ? baseNow + _a.FLIP_DURATION_MS : baseNow;
+        this.applyTimeToDom(this.getTimeForDate(new Date(effectiveNow)), false);
+        tick();
+      }, delay);
     };
-    t();
+    tick();
   }
   stopClock() {
-    this.clockTimerId && (clearTimeout(this.clockTimerId), this.clockTimerId = null);
-    for (const t of this.flipTimeouts.values())
-      clearTimeout(t);
+    if (this.clockTimerId) {
+      clearTimeout(this.clockTimerId);
+      this.clockTimerId = null;
+    }
+    for (const timeout of this.flipTimeouts.values()) {
+      clearTimeout(timeout);
+    }
     this.flipTimeouts.clear();
   }
-  applyTimeToDom(t, e) {
-    this.applyDigital(t), this.applyAnalog(t), this.applyFlip(t, e);
+  applyTimeToDom(time, forceInstantFlip) {
+    this.applyDigital(time);
+    this.applyAnalog(time);
+    this.applyFlip(time, forceInstantFlip);
   }
-  applyDigital(t) {
-    !this.digitalHourEl || !this.digitalMinuteEl || (this.digitalHourEl.textContent = t.h, this.digitalMinuteEl.textContent = t.m, this.digitalSecondEl && (this.digitalSecondEl.textContent = t.s));
-  }
-  applyAnalog(t) {
-    if (!this.analogHourEl || !this.analogMinuteEl) return;
-    const e = this.getAnalogHourRotation(t), i = this.getAnalogMinuteRotation(t);
-    if (this.analogHourEl.setAttribute("transform", `rotate(${e})`), this.analogMinuteEl.setAttribute("transform", `rotate(${i})`), this.analogMarkerEl && this.analogMarkerEl.setAttribute("transform", `rotate(${this.analogMarkerRotation - 3} 0 0)`), this.showSeconds())
-      for (let n = 0; n < this.analogTickEls.length; n += 1) {
-        const o = this.analogTickEls[n], a = this.getAnalogTickDistance(n);
-        o.setAttribute("data-active", a >= 0 ? String(a) : "");
-      }
-    else
-      for (const n of this.analogTickEls)
-        n.setAttribute("data-active", "");
-  }
-  applyFlip(t, e) {
-    if (!this.flipDigitEls.length) return;
-    const i = `${t.h}${t.m}${t.s}`.split("");
-    for (let n = 0; n < this.flipDigitEls.length; n += 1) {
-      const o = this.flipDigitEls[n], a = this.flipDigits[n] ?? { current: "0", next: "0", flipping: !1 }, c = i[n] ?? "0", l = this.flipTimeouts.get(n);
-      if (l && (clearTimeout(l), this.flipTimeouts.delete(n)), e || a.current === c) {
-        a.current = c, a.next = c, a.flipping = !1, this.flipDigits[n] = a, this.renderFlipDigit(n, o);
-        continue;
-      }
-      a.next = c, a.flipping = !0, this.flipDigits[n] = a, this.renderFlipDigit(n, o);
-      const k = setTimeout(() => {
-        const d = this.flipDigits[n];
-        d && (d.current = d.next, d.flipping = !1, this.flipDigits[n] = d, this.renderFlipDigit(n, o), this.flipTimeouts.delete(n));
-      }, r.FLIP_DURATION_MS);
-      this.flipTimeouts.set(n, k);
+  applyDigital(time) {
+    if (!this.digitalHourEl || !this.digitalMinuteEl) return;
+    this.digitalHourEl.textContent = time.h;
+    this.digitalMinuteEl.textContent = time.m;
+    if (this.digitalSecondEl) {
+      this.digitalSecondEl.textContent = time.s;
     }
   }
-  renderFlipDigit(t, e) {
-    const i = this.flipDigits[t];
-    if (!i) return;
-    e.classList.toggle("flipping", i.flipping);
-    const n = e.querySelector(".digit-full"), o = e.querySelector(".digit-static.top .value"), a = e.querySelector(".digit-static.bottom .value"), c = e.querySelector(".digit-flip.top .value"), l = e.querySelector(".digit-flip.bottom .value");
-    n && (n.textContent = i.current), o && (o.textContent = i.flipping ? i.next : i.current), a && (a.textContent = i.current), c && (c.textContent = i.current), l && (l.textContent = i.next);
+  applyAnalog(time) {
+    if (!this.analogHourEl || !this.analogMinuteEl) return;
+    const hourRotation = this.getAnalogHourRotation(time);
+    const minuteRotation = this.getAnalogMinuteRotation(time);
+    this.analogHourEl.setAttribute("transform", `rotate(${hourRotation})`);
+    this.analogMinuteEl.setAttribute("transform", `rotate(${minuteRotation})`);
+    if (this.analogMarkerEl) {
+      this.analogMarkerEl.setAttribute("transform", `rotate(${this.analogMarkerRotation - 3} 0 0)`);
+    }
+    if (this.showSeconds()) {
+      for (let index = 0; index < this.analogTickEls.length; index += 1) {
+        const tickEl = this.analogTickEls[index];
+        const distance = this.getAnalogTickDistance(index);
+        tickEl.setAttribute("data-active", distance >= 0 ? String(distance) : "");
+      }
+    } else {
+      for (const tickEl of this.analogTickEls) {
+        tickEl.setAttribute("data-active", "");
+      }
+    }
   }
-  getAnalogHourRotation(t) {
-    const e = Number(t.h) % 12, i = Number(t.m);
-    return (e + i / 60) * 30;
+  applyFlip(time, forceInstant) {
+    if (!this.flipDigitEls.length) return;
+    const nextDigits = `${time.h}${time.m}${time.s}`.split("");
+    for (let index = 0; index < this.flipDigitEls.length; index += 1) {
+      const digitEl = this.flipDigitEls[index];
+      const current = this.flipDigits[index] ?? { current: "0", next: "0", flipping: false };
+      const next = nextDigits[index] ?? "0";
+      const pending = this.flipTimeouts.get(index);
+      if (pending) {
+        clearTimeout(pending);
+        this.flipTimeouts.delete(index);
+      }
+      if (forceInstant || current.current === next) {
+        current.current = next;
+        current.next = next;
+        current.flipping = false;
+        this.flipDigits[index] = current;
+        this.renderFlipDigit(index, digitEl);
+        continue;
+      }
+      current.next = next;
+      current.flipping = true;
+      this.flipDigits[index] = current;
+      this.renderFlipDigit(index, digitEl);
+      const timeout = setTimeout(() => {
+        const state = this.flipDigits[index];
+        if (!state) return;
+        state.current = state.next;
+        state.flipping = false;
+        this.flipDigits[index] = state;
+        this.renderFlipDigit(index, digitEl);
+        this.flipTimeouts.delete(index);
+      }, _a.FLIP_DURATION_MS);
+      this.flipTimeouts.set(index, timeout);
+    }
   }
-  getAnalogMinuteRotation(t) {
-    const e = Number(t.m), i = Number(t.s);
-    return (e + i / 60) * 6;
+  renderFlipDigit(index, digitEl) {
+    const state = this.flipDigits[index];
+    if (!state) return;
+    digitEl.classList.toggle("flipping", state.flipping);
+    const full = digitEl.querySelector(".digit-full");
+    const staticTop = digitEl.querySelector(".digit-static.top .value");
+    const staticBottom = digitEl.querySelector(".digit-static.bottom .value");
+    const flipTop = digitEl.querySelector(".digit-flip.top .value");
+    const flipBottom = digitEl.querySelector(".digit-flip.bottom .value");
+    if (full) full.textContent = state.current;
+    if (staticTop) staticTop.textContent = state.flipping ? state.next : state.current;
+    if (staticBottom) staticBottom.textContent = state.current;
+    if (flipTop) flipTop.textContent = state.current;
+    if (flipBottom) flipBottom.textContent = state.next;
   }
-  getAnalogTickDistance(t) {
-    const e = (Math.round(this.analogMarkerRotation / 6) % 60 + 60) % 60;
-    if (!Number.isFinite(e)) return -1;
-    const i = (e - t + 60) % 60;
-    return i <= 4 ? i : -1;
+  getAnalogHourRotation(time) {
+    const hours = Number(time.h) % 12;
+    const minutes = Number(time.m);
+    return (hours + minutes / 60) * 30;
+  }
+  getAnalogMinuteRotation(time) {
+    const minutes = Number(time.m);
+    const seconds = Number(time.s);
+    return (minutes + seconds / 60) * 6;
+  }
+  getAnalogTickDistance(tick) {
+    const markerTick = (Math.round(this.analogMarkerRotation / 6) % 60 + 60) % 60;
+    if (!Number.isFinite(markerTick)) return -1;
+    const distance = (markerTick - tick + 60) % 60;
+    return distance <= 4 ? distance : -1;
   }
   getCurrentTime() {
     return this.getTimeForDate(/* @__PURE__ */ new Date());
   }
-  getTimeForDate(t) {
-    const e = this.config.use24Hour === void 0 ? !0 : !!this.config.use24Hour;
-    let i = t.getHours();
-    return e || (i = i % 12 || 12), {
-      h: String(i).padStart(2, "0"),
-      m: String(t.getMinutes()).padStart(2, "0"),
-      s: String(t.getSeconds()).padStart(2, "0")
+  getTimeForDate(now) {
+    const use24Hour = this.config.use24Hour === void 0 ? true : Boolean(this.config.use24Hour);
+    let hours = now.getHours();
+    if (!use24Hour) {
+      hours = hours % 12 || 12;
+    }
+    return {
+      h: String(hours).padStart(2, "0"),
+      m: String(now.getMinutes()).padStart(2, "0"),
+      s: String(now.getSeconds()).padStart(2, "0")
     };
   }
-  createFlipDigits(t) {
-    return `${t.h}${t.m}${t.s}`.split("").map((e) => ({
-      current: e,
-      next: e,
-      flipping: !1
+  createFlipDigits(time) {
+    return `${time.h}${time.m}${time.s}`.split("").map((digit) => ({
+      current: digit,
+      next: digit,
+      flipping: false
     }));
   }
-  extractConfig(t) {
-    const e = t?.config;
-    return !e || typeof e != "object" || Array.isArray(e) ? {} : e;
+  extractConfig(payload) {
+    const raw = payload?.config;
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+    if (raw.hasOwnProperty("shadow")) this.shadows.set(Boolean(raw.shadow));
+    return raw;
   }
-  extractWidgetName(t) {
-    const e = t?.name;
-    return typeof e == "string" ? e : "";
+  extractWidgetName(payload) {
+    const name = payload?.name;
+    return typeof name === "string" ? name : "";
   }
-}, r.FLIP_DURATION_MS = 180, r.ANALOG_REFRESH_MS = 50, r);
-const H = `<div class="clock">
+}, _a.FLIP_DURATION_MS = 180, _a.ANALOG_REFRESH_MS = 50, _a);
+const template = `<div class="clock {{#if shadowsEnabled()}}shadows{{/if}}">
   {{#if isAnalog()}}
     <div class="analog-wrapper">
       <svg class="analog-clock" viewBox="-60 -60 120 120" aria-label="Analog clock">
@@ -450,7 +724,7 @@ const H = `<div class="clock">
           {{/each}}
         </g>
         <g class="hour-labels">
-          {{#each analogDigits}}
+          {{#each analogDigits()}}
             <text
               class="digit"
               x="0"
@@ -542,9 +816,14 @@ const H = `<div class="clock">
     </div>
   {{/if}}
 </div>
-`, U = '.clock{width:100%;height:100%}.clock .blink{animation:blink .75s ease-out infinite alternate}.clock .analog-wrapper{--clock-size: min(var(--host-width, 200px), var(--host-height, 200px));--clock-padding: calc(var(--clock-size) / 15);width:100%;height:100%;display:flex;justify-content:center;align-items:center}.clock .analog-clock{width:calc(var(--clock-size) - var(--clock-padding) * 2);height:calc(var(--clock-size) - var(--clock-padding) * 2);overflow:visible;color:#ffffffe0}.clock .analog-clock .dial{fill:transparent;stroke:#ffffffad;stroke-width:1.2px}.clock .analog-clock .second-ticks .tick{stroke:#ffffff4d;stroke-width:.8px;stroke-linecap:round;opacity:1;transition:stroke 1s linear,stroke-width 1s linear,opacity 1s linear}.clock .analog-clock .second-ticks .tick[data-active="0"]{stroke:#fffffff2;stroke-width:1.8px;opacity:1}.clock .analog-clock .second-ticks .tick[data-active="1"]{stroke:#fffc;stroke-width:1.5px;opacity:.82}.clock .analog-clock .second-ticks .tick[data-active="2"]{stroke:#ffffff9e;stroke-width:1.25px;opacity:.64}.clock .analog-clock .second-ticks .tick[data-active="3"]{stroke:#ffffff7a;stroke-width:1.05px;opacity:.5}.clock .analog-clock .second-ticks .tick[data-active="4"]{stroke:#ffffff70;stroke-width:.9px;opacity:.7}.clock .analog-clock .hour-labels .digit{fill:currentColor;font-size:.53rem;font-weight:500;font-family:sans-serif}.clock .analog-clock .hands .hand{stroke-linecap:round}.clock .analog-clock .hands .hour{stroke:#ffffff94;stroke-width:2.4px}.clock .analog-clock .hands .minute{stroke:#ffffffe0;stroke-width:1.35px}.clock .analog-clock .seconds-marker path{fill:#fffffff5}.clock .analog-clock .pivot{fill:var(--color-primary);stroke:#fff;stroke-width:1.2px}.clock .digital-clock{width:100%;height:100%;display:flex;justify-content:center;align-items:center;font-size:calc(var(--host-width, 200px) / 5);position:relative}.clock .digital-clock .separator{display:flex;align-items:center;transform:translateY(-.1em)}.clock .digital-clock .separator.led{transform:translateY(-15%)}.clock .digital-clock .digits{font-variant-numeric:tabular-nums lining-nums}.clock .digital-clock .digits.led{font-family:digi-mono,monospace,sans-serif}.clock .digital-clock .background{display:flex;position:absolute;opacity:.2}.clock .flipclock{--clock-size: calc(var(--host-width, 200px) / 24);--digit-width: calc(var(--clock-size) * 3);--digit-height: calc(var(--clock-size) * 4.2);--digit-font-size: calc(var(--clock-size) * 3);--digit-radius: calc(var(--clock-size) * .4);--flip-duration: .25s;display:flex;align-items:center;justify-content:center;gap:calc(var(--clock-size) * .65);width:100%;height:100%}.clock .flipclock .digit-group{display:flex;gap:calc(var(--clock-size) * .3)}.clock .flipclock .separator{color:#eee;font-size:calc(var(--clock-size) * 2.4);font-weight:700;line-height:1;text-shadow:0 calc(var(--clock-size) * .05) calc(var(--clock-size) * .12) #333}.clock .flipclock .digit{position:relative;width:var(--digit-width);height:var(--digit-height);perspective:calc(var(--clock-size) * 28);border-radius:var(--digit-radius);box-shadow:0 calc(var(--clock-size) * .15) calc(var(--clock-size) * .45) #111}.clock .flipclock .digit .digit-full{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#eee;font-size:var(--digit-font-size);font-weight:700;line-height:1;text-shadow:0 calc(var(--clock-size) * .05) calc(var(--clock-size) * .12) #333;z-index:2}.clock .flipclock .digit:after{content:"";position:absolute;left:0;top:50%;width:100%;height:calc(var(--clock-size) * .08);transform:translateY(calc(var(--clock-size) * -.04));background:#000;z-index:4}.clock .flipclock .digit-static,.clock .flipclock .digit-flip{position:absolute;left:0;width:100%;height:50%;overflow:hidden;backface-visibility:hidden;z-index:1}.clock .flipclock .digit-static .value,.clock .flipclock .digit-flip .value{position:absolute;left:50%;width:100%;height:var(--digit-height);display:block;color:#eee;font-size:var(--digit-font-size);font-weight:700;line-height:var(--digit-height);text-align:center;transform:translate(-50%);text-shadow:0 calc(var(--clock-size) * .05) calc(var(--clock-size) * .12) #333}.clock .flipclock .digit-static.top,.clock .flipclock .digit-flip.top{top:0;background:#181818;border-top:1px solid black;border-radius:var(--digit-radius) var(--digit-radius) 0 0;box-shadow:inset 0 calc(var(--clock-size) * .5) calc(var(--clock-size) * 1.2) #111}.clock .flipclock .digit-static.top .value,.clock .flipclock .digit-flip.top .value{top:0}.clock .flipclock .digit-static.bottom,.clock .flipclock .digit-flip.bottom{bottom:0;background:#2a2a2a;border-bottom:1px solid #444444;border-radius:0 0 var(--digit-radius) var(--digit-radius);box-shadow:inset 0 calc(var(--clock-size) * .5) calc(var(--clock-size) * 1.2) #202020}.clock .flipclock .digit-static.bottom .value,.clock .flipclock .digit-flip.bottom .value{top:calc(var(--digit-height) * -.5)}.clock .flipclock .digit-static .value{opacity:0}.clock .flipclock .digit-flip{opacity:0;pointer-events:none;z-index:3}.clock .flipclock .digit-flip.top{transform-origin:50% 100%;transform:rotateX(0)}.clock .flipclock .digit-flip.bottom{display:none}.clock .flipclock .digit.flipping .digit-flip.top{opacity:1;animation:flipTop var(--flip-duration) ease-out forwards}@keyframes flipTop{0%{transform:rotateX(0)}to{transform:rotateX(-90deg)}}@keyframes blink{0%{opacity:1}49%{opacity:1}50%{opacity:0}to{opacity:0}}.text-shadows .analog-clock{filter:drop-shadow(1px 1px .25em rgba(0,0,0,.5))}', D = O($, { template: H, styles: U }), P = D, B = { DisplayDuckWidget: D, Widget: P };
+`;
+const styles = '.clock {\n  width: 100%;\n  height: 100%;\n}\n.clock.shadows {\n  filter: drop-shadow(-1px 1px 1px #000000);\n}\n.clock .blink {\n  animation: blink 0.75s ease-out infinite alternate;\n}\n.clock .analog-wrapper {\n  --clock-size: min(var(--host-width, 200px), var(--host-height, 200px));\n  --clock-padding: calc(var(--clock-size) / 15);\n  width: 100%;\n  height: 100%;\n  display: flex;\n  justify-content: center;\n  align-items: center;\n}\n.clock .analog-clock {\n  width: calc(var(--clock-size) - var(--clock-padding) * 2);\n  height: calc(var(--clock-size) - var(--clock-padding) * 2);\n  overflow: visible;\n  color: rgb(from var(--color-text) r g b/0.88);\n}\n.clock .analog-clock .dial {\n  fill: transparent;\n  stroke: rgb(from var(--color-text) r g b/0.68);\n  stroke-width: 1.2px;\n}\n.clock .analog-clock .second-ticks .tick {\n  stroke: rgb(from var(--color-text) r g b/0.3);\n  stroke-width: 0.8px;\n  stroke-linecap: round;\n  opacity: 1;\n  transition: stroke 1s linear, stroke-width 1s linear, opacity 1s linear;\n}\n.clock .analog-clock .second-ticks .tick[data-active="0"] {\n  stroke: rgb(from var(--color-text) r g b/0.95);\n  stroke-width: 1.8px;\n  opacity: 1;\n}\n.clock .analog-clock .second-ticks .tick[data-active="1"] {\n  stroke: rgb(from var(--color-text) r g b/0.8);\n  stroke-width: 1.5px;\n  opacity: 0.82;\n}\n.clock .analog-clock .second-ticks .tick[data-active="2"] {\n  stroke: rgb(from var(--color-text) r g b/0.62);\n  stroke-width: 1.25px;\n  opacity: 0.64;\n}\n.clock .analog-clock .second-ticks .tick[data-active="3"] {\n  stroke: rgb(from var(--color-text) r g b/0.48);\n  stroke-width: 1.05px;\n  opacity: 0.5;\n}\n.clock .analog-clock .second-ticks .tick[data-active="4"] {\n  stroke: rgb(from var(--color-text) r g b/0.44);\n  stroke-width: 0.9px;\n  opacity: 0.7;\n}\n.clock .analog-clock .hour-labels .digit {\n  fill: currentColor;\n  font-size: 0.53rem;\n  font-weight: 500;\n  font-family: sans-serif;\n}\n.clock .analog-clock .hands .hand {\n  stroke-linecap: round;\n}\n.clock .analog-clock .hands .hour {\n  stroke: rgb(from var(--color-text) r g b/0.58);\n  stroke-width: 2.4px;\n}\n.clock .analog-clock .hands .minute {\n  stroke: rgb(from var(--color-text) r g b/0.88);\n  stroke-width: 1.35px;\n}\n.clock .analog-clock .seconds-marker path {\n  fill: rgb(from var(--color-text) r g b/0.96);\n}\n.clock .analog-clock .pivot {\n  fill: var(--color-primary);\n  stroke: var(--color-text);\n  stroke-width: 1.2px;\n}\n.clock .digital-clock {\n  width: 100%;\n  height: 100%;\n  display: flex;\n  justify-content: center;\n  align-items: center;\n  font-size: calc(var(--host-width, 200px) / 5);\n  position: relative;\n}\n.clock .digital-clock .separator {\n  display: flex;\n  align-items: center;\n  transform: translateY(-0.1em);\n}\n.clock .digital-clock .separator.led {\n  transform: translateY(-15%);\n}\n.clock .digital-clock .digits {\n  font-variant-numeric: tabular-nums lining-nums;\n}\n.clock .digital-clock .digits.led {\n  font-family: "digi-mono", monospace, sans-serif;\n}\n.clock .digital-clock .background {\n  display: flex;\n  position: absolute;\n  opacity: 0.2;\n}\n.clock .flipclock {\n  --clock-size: calc(var(--host-width, 200px) / 24);\n  --digit-width: calc(var(--clock-size) * 3);\n  --digit-height: calc(var(--clock-size) * 4.2);\n  --digit-font-size: calc(var(--clock-size) * 3);\n  --digit-radius: calc(var(--clock-size) * 0.4);\n  --flip-duration: 0.25s;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  gap: calc(var(--clock-size) * 0.65);\n  width: 100%;\n  height: 100%;\n}\n.clock .flipclock .digit-group {\n  display: flex;\n  gap: calc(var(--clock-size) * 0.3);\n}\n.clock .flipclock .separator {\n  color: #eeeeee;\n  font-size: calc(var(--clock-size) * 2.4);\n  font-weight: 700;\n  line-height: 1;\n  text-shadow: 0 calc(var(--clock-size) * 0.05) calc(var(--clock-size) * 0.12) #333;\n}\n.clock .flipclock .digit {\n  position: relative;\n  width: var(--digit-width);\n  height: var(--digit-height);\n  perspective: calc(var(--clock-size) * 28);\n  border-radius: var(--digit-radius);\n  box-shadow: 0 calc(var(--clock-size) * 0.15) calc(var(--clock-size) * 0.45) #111;\n}\n.clock .flipclock .digit .digit-full {\n  position: absolute;\n  inset: 0;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  color: #eeeeee;\n  font-size: var(--digit-font-size);\n  font-weight: 700;\n  line-height: 1;\n  text-shadow: 0 calc(var(--clock-size) * 0.05) calc(var(--clock-size) * 0.12) #333;\n  z-index: 2;\n}\n.clock .flipclock .digit::after {\n  content: "";\n  position: absolute;\n  left: 0;\n  top: 50%;\n  width: 100%;\n  height: calc(var(--clock-size) * 0.08);\n  transform: translateY(calc(var(--clock-size) * -0.04));\n  background: black;\n  z-index: 4;\n}\n.clock .flipclock .digit-static,\n.clock .flipclock .digit-flip {\n  position: absolute;\n  left: 0;\n  width: 100%;\n  height: 50%;\n  overflow: hidden;\n  backface-visibility: hidden;\n  z-index: 1;\n}\n.clock .flipclock .digit-static .value,\n.clock .flipclock .digit-flip .value {\n  position: absolute;\n  left: 50%;\n  width: 100%;\n  height: var(--digit-height);\n  display: block;\n  color: #eeeeee;\n  font-size: var(--digit-font-size);\n  font-weight: 700;\n  line-height: var(--digit-height);\n  text-align: center;\n  transform: translateX(-50%);\n  text-shadow: 0 calc(var(--clock-size) * 0.05) calc(var(--clock-size) * 0.12) #333;\n}\n.clock .flipclock .digit-static.top,\n.clock .flipclock .digit-flip.top {\n  top: 0;\n  background: #181818;\n  border-top: 1px solid black;\n  border-radius: var(--digit-radius) var(--digit-radius) 0 0;\n  box-shadow: inset 0 calc(var(--clock-size) * 0.5) calc(var(--clock-size) * 1.2) #111111;\n}\n.clock .flipclock .digit-static.top .value,\n.clock .flipclock .digit-flip.top .value {\n  top: 0;\n}\n.clock .flipclock .digit-static.bottom,\n.clock .flipclock .digit-flip.bottom {\n  bottom: 0;\n  background: #2a2a2a;\n  border-bottom: 1px solid #444444;\n  border-radius: 0 0 var(--digit-radius) var(--digit-radius);\n  box-shadow: inset 0 calc(var(--clock-size) * 0.5) calc(var(--clock-size) * 1.2) #202020;\n}\n.clock .flipclock .digit-static.bottom .value,\n.clock .flipclock .digit-flip.bottom .value {\n  top: calc(var(--digit-height) * -0.5);\n}\n.clock .flipclock .digit-static .value {\n  opacity: 0;\n}\n.clock .flipclock .digit-flip {\n  opacity: 0;\n  pointer-events: none;\n  z-index: 3;\n}\n.clock .flipclock .digit-flip.top {\n  transform-origin: 50% 100%;\n  transform: rotateX(0deg);\n}\n.clock .flipclock .digit-flip.bottom {\n  display: none;\n}\n.clock .flipclock .digit.flipping .digit-flip.top {\n  opacity: 1;\n  animation: flipTop var(--flip-duration) ease-out forwards;\n}\n\n@keyframes flipTop {\n  0% {\n    transform: rotateX(0deg);\n  }\n  100% {\n    transform: rotateX(-90deg);\n  }\n}\n@keyframes blink {\n  0% {\n    opacity: 1;\n  }\n  49% {\n    opacity: 1;\n  }\n  50% {\n    opacity: 0;\n  }\n  100% {\n    opacity: 0;\n  }\n}\n.text-shadows .analog-clock {\n  filter: drop-shadow(1px 1px 0.25em rgba(0, 0, 0, 0.5));\n}';
+const DisplayDuckWidget = createWidgetClass(DisplayDuckWidget$1, { template, styles });
+const Widget = DisplayDuckWidget;
+const displayduckPackClocks_clock_entry = { DisplayDuckWidget, Widget };
 export {
-  D as DisplayDuckWidget,
-  P as Widget,
-  B as default
+  DisplayDuckWidget,
+  Widget,
+  displayduckPackClocks_clock_entry as default
 };
+//# sourceMappingURL=clock.js.map

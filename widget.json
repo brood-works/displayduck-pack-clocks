@@ -2,7 +2,7 @@
   "icon": "fas fa-clock",
   "name": "Clock",
   "description": "A pack of 3 clock widgets: digital, flip, and analog.",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "assets": [],
   "widgets": [
     {
@@ -40,6 +40,12 @@
         },
         "blinkSeparator": {
           "label": "Blinking Separator",
+          "type": "boolean",
+          "defaultValue": false
+        },
+        "shadow": {
+          "label": "Shadows",
+          "subLabel": "Adds a subtle shadow to the widget to improve visibility on busy backgrounds.",
           "type": "boolean",
           "defaultValue": false
         }
@@ -93,6 +99,18 @@
         },
         "showSeconds": {
           "label": "Show Seconds",
+          "type": "boolean",
+          "defaultValue": false
+        },
+        "showAllNumbers": {
+          "label": "Show all numbers",
+          "subLabel": "Displays all numbers (1-12) on the clock face.",
+          "type": "boolean",
+          "defaultValue": false
+        },
+        "shadow": {
+          "label": "Shadows",
+          "subLabel": "Adds a subtle shadow to the widget to improve visibility on busy backgrounds.",
           "type": "boolean",
           "defaultValue": false
         }

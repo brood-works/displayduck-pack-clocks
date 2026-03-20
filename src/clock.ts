@@ -1,4 +1,4 @@
-import type { WidgetContext, WidgetPayload } from '@displayduck/base';
+import { Signal, type WidgetContext, type WidgetPayload, signal } from '@displayduck/base';
 
 type ClockStyle = 'flip' | 'digital' | 'analog';
 type ClockTime = { h: string; m: string; s: string };
@@ -24,8 +24,10 @@ export class DisplayDuckWidget {
   private analogTickEls: SVGLineElement[] = [];
   private flipDigitEls: HTMLElement[] = [];
 
-  public readonly analogDigits = [3, 6, 9, 12];
+  public readonly analogQuarterDigits = [3, 6, 9, 12];
+  public readonly analogAllDigits = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
   public readonly analogTicks = Array.from({ length: 60 }, (_, index) => index);
+  public readonly shadows: Signal<boolean> = signal(false);
 
   public constructor(private readonly ctx: WidgetContext) {
     this.config = this.extractConfig(ctx.payload);
@@ -54,6 +56,10 @@ export class DisplayDuckWidget {
 
   public onDestroy(): void {
     this.stopClock();
+  }
+
+  public shadowsEnabled(): boolean {
+    return this.shadows();
   }
 
   public isAnalog(): boolean {
@@ -90,6 +96,14 @@ export class DisplayDuckWidget {
 
   public blinkSeparator(): boolean {
     return Boolean(this.config.blinkSeparator);
+  }
+
+  public showAllNumbers(): boolean {
+    return Boolean(this.config.showAllNumbers);
+  }
+
+  public analogDigits(): number[] {
+    return this.showAllNumbers() ? this.analogAllDigits : this.analogQuarterDigits;
   }
 
   public getTickRotation(tick: number): string {
@@ -314,6 +328,9 @@ export class DisplayDuckWidget {
   private extractConfig(payload: WidgetPayload): Record<string, unknown> {
     const raw = (payload as { config?: unknown })?.config;
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+
+    // @ts-ignore
+    if(raw.hasOwnProperty('shadow')) this.shadows.set(Boolean(raw.shadow));
     return raw as Record<string, unknown>;
   }
 

@@ -1,4 +1,4 @@
-<div class="clock">
+<div class="clock {{#if shadowsEnabled()}}shadows{{/if}}">
   {{#if isAnalog()}}
     <div class="analog-wrapper">
       <svg class="analog-clock" viewBox="-60 -60 120 120" aria-label="Analog clock">
@@ -18,7 +18,7 @@
           {{/each}}
         </g>
         <g class="hour-labels">
-          {{#each analogDigits}}
+          {{#each analogDigits()}}
             <text
               class="digit"
               x="0"
